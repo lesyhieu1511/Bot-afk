@@ -20,11 +20,26 @@ jobs:
       - name: Install production dependencies
         run: npm install --omit=dev --no-audit --no-fund
 
-      - name: Create KataBump ZIP
+      - name: Create dependency-free package.json for KataBump
         run: |
           rm -rf katabump-bundle
           mkdir katabump-bundle
-          cp index.js package.json katabump-bundle/
+          cp index.js katabump-bundle/
+          cat > katabump-bundle/package.json <<'EOF'
+          {
+            "name": "minecraft-afk-bot-26-2",
+            "version": "2.0.0",
+            "private": true,
+            "description": "Minimal Minecraft 26.2 AFK protocol client",
+            "main": "index.js",
+            "scripts": {
+              "start": "node index.js"
+            },
+            "engines": {
+              "node": ">=22"
+            }
+          }
+          EOF
           cp -r node_modules katabump-bundle/
           cd katabump-bundle
           zip -qr ../Bot-afk-KataBump.zip index.js package.json node_modules
