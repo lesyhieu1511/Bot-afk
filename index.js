@@ -109,7 +109,26 @@ function connectBot() {
 
   let newClient;
   try {
-    newClient = mc.createClient({ host: HOST, port: PORT, username: USERNAME, auth: 'offline', version: '26.2' });
+    newClient = mc.createClient({
+      host: HOST,
+      port: PORT,
+      username: USERNAME,
+      auth: 'offline',
+      version: '26.2',
+      // Explicit 26.2 Client Information values. The 26.2 serializer
+      // expects particleStatus as the protocol enum string, not a number.
+      clientSettings: {
+        locale: 'en_us',
+        viewDistance: 10,
+        chatFlags: 0,
+        chatColors: true,
+        skinParts: 127,
+        mainHand: 1,
+        enableTextFiltering: false,
+        enableServerListing: true,
+        particleStatus: 'all'
+      }
+    });
   } catch (error) {
     state = 'OFFLINE';
     log(`CONNECT ERROR: ${error.message}`);
@@ -158,14 +177,9 @@ function controllerTick() {
   if (state === 'KICKED') return;
 
   if (state === 'OFFLINE') {
-    // Do not rely on Server List Ping. MSH/proxies can accept the game
-    // connection while not returning a normal status response.
     if (!rejoinTimer) scheduleJoin();
     return;
   }
-
-  // While online, player_info_update/remove is the authoritative signal
-  // for other connected players. No movement or anti-AFK packets are sent.
 }
 
 log(`AFK controller started for ${HOST}:${PORT}`);
