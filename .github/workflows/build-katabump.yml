@@ -20,11 +20,11 @@ jobs:
       - name: Install production dependencies
         run: npm install --omit=dev --no-audit --no-fund
 
-      - name: Create dependency-free package.json for KataBump
+      - name: Create KataBump ZIP
         run: |
           rm -rf katabump-bundle
           mkdir katabump-bundle
-          cp index.js katabump-bundle/
+          cp index.js config.js katabump-bundle/
           cat > katabump-bundle/package.json <<'EOF'
           {
             "name": "minecraft-afk-bot-26-2",
@@ -42,7 +42,7 @@ jobs:
           EOF
           cp -r node_modules katabump-bundle/
           cd katabump-bundle
-          zip -qr ../Bot-afk-KataBump.zip index.js package.json node_modules
+          zip -qr ../Bot-afk-KataBump.zip index.js config.js package.json node_modules
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
