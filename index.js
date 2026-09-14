@@ -1,11 +1,9 @@
 'use strict';
 
-const net = require('net');
 const mc = require('minecraft-protocol');
 const config = require('./config');
 
 const { HOST, PORT, USE_LOGIN, USERNAME, PASSWORD, PING_INTERVAL, REJOIN_DELAY, LOGIN_DELAY } = config;
-const PROTOCOL = 776; // Minecraft 26.2
 
 if (!HOST || HOST === 'YOUR_SERVER_IP') throw new Error('Please configure HOST in config.js');
 if (USE_LOGIN && (!PASSWORD || PASSWORD === 'YOUR_EASYAUTH_PASSWORD')) throw new Error('Please configure PASSWORD in config.js or set USE_LOGIN=false');
@@ -13,99 +11,12 @@ if (USE_LOGIN && (!PASSWORD || PASSWORD === 'YOUR_EASYAUTH_PASSWORD')) throw new
 let client = null;
 let state = 'OFFLINE';
 let rejoinTimer = null;
-let pingInProgress = false;
 let loginTimer = null;
 let loginSent = false;
-let pingBaseline = null;
+const onlinePlayers = new Set();
 
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`);
-}
-
-function writeVarInt(value) {
-  const bytes = [];
-  let v = value >>> 0;
-  do {
-    let temp = v & 0x7f;
-    v >>>= 7;
-    if (v !== 0) temp |= 0x80;
-    bytes.push(temp);
-  } while (v !== 0);
-  return Buffer.from(bytes);
-}
-
-function writeString(value) {
-  const data = Buffer.from(value, 'utf8');
-  return Buffer.concat([writeVarInt(data.length), data]);
-}
-
-function packet(payload) {
-  return Buffer.concat([writeVarInt(payload.length), payload]);
-}
-
-function readVarInt(buffer, offset = 0) {
-  let value = 0;
-  let shift = 0;
-  for (let i = 0; i < 5; i++) {
-    if (offset >= buffer.length) return null;
-    const byte = buffer[offset++];
-    value |= (byte & 0x7f) << shift;
-    if ((byte & 0x80) === 0) return { value, offset };
-    shift += 7;
-  }
-  return null;
-}
-
-function parseStatusPacket(buffer) {
-  const length = readVarInt(buffer);
-  if (!length || buffer.length < length.offset + length.value) return null;
-  const packetStart = length.offset;
-  const packetEnd = packetStart + length.value;
-  const packetId = readVarInt(buffer, packetStart);
-  if (!packetId || packetId.value !== 0) return null;
-  const jsonLength = readVarInt(buffer, packetId.offset);
-  if (!jsonLength) return null;
-  const start = jsonLength.offset;
-  const end = start + jsonLength.value;
-  if (end > packetEnd) return null;
-  return JSON.parse(buffer.subarray(start, end).toString('utf8'));
-}
-
-function pingServer(timeout = 3000) {
-  return new Promise(resolve => {
-    const socket = new net.Socket();
-    const chunks = [];
-    let total = 0;
-    let done = false;
-    const finish = result => {
-      if (done) return;
-      done = true;
-      socket.destroy();
-      resolve(result);
-    };
-    socket.setTimeout(timeout);
-    socket.on('connect', () => {
-      const handshake = Buffer.concat([
-        writeVarInt(0x00), writeVarInt(PROTOCOL), writeString(HOST),
-        Buffer.from([(PORT >>> 8) & 0xff, PORT & 0xff]), writeVarInt(1)
-      ]);
-      socket.write(packet(handshake));
-      socket.write(packet(Buffer.from([0x00])));
-    });
-    socket.on('data', chunk => {
-      chunks.push(chunk);
-      total += chunk.length;
-      try {
-        const status = parseStatusPacket(Buffer.concat(chunks, total));
-        if (status?.players && typeof status.players.online === 'number') {
-          finish({ online: status.players.online, max: status.players.max, version: status.version?.name || null });
-        }
-      } catch (_) {}
-    });
-    socket.on('timeout', () => finish(null));
-    socket.on('error', () => finish(null));
-    socket.on('close', () => finish(null));
-  });
 }
 
 function scheduleJoin() {
@@ -114,7 +25,7 @@ function scheduleJoin() {
     rejoinTimer = null;
     if (state === 'OFFLINE') connectBot();
   }, REJOIN_DELAY);
-  log(`No real players. Bot will connect in ${REJOIN_DELAY / 1000}s.`);
+  log(`Server reachable/starting. Bot will connect in ${REJOIN_DELAY / 1000}s.`);
 }
 
 function cancelJoin() {
@@ -141,15 +52,18 @@ function sendLogin() {
   }
 }
 
-function textFromPacket(data) {
-  if (!data) return '';
-  try {
-    if (typeof data === 'string') return data;
-    if (data.message) return JSON.stringify(data.message);
-    if (data.content) return String(data.content);
-    if (data.text) return String(data.text);
-    return JSON.stringify(data);
-  } catch (_) { return ''; }
+function uuidKey(value) {
+  if (value === undefined || value === null) return null;
+  if (Buffer.isBuffer(value)) return value.toString('hex');
+  if (typeof value === 'object' && value.toString) return value.toString();
+  return String(value);
+}
+
+function checkPlayers() {
+  if (state !== 'ONLINE') return;
+  const count = onlinePlayers.size;
+  log(`[PLAYERS] tab-list=${count}: ${Array.from(onlinePlayers).join(', ') || 'none'}`);
+  if (count > 1) disconnectBot(`player list contains ${count} players`);
 }
 
 function handlePlayPacket(name, data) {
@@ -158,8 +72,30 @@ function handlePlayPacket(name, data) {
     if (id !== undefined) { try { client.write('keep_alive', { id }); } catch (_) {} }
     return;
   }
+
+  if (name === 'player_info_update') {
+    const players = Array.isArray(data?.players) ? data.players : [];
+    for (const entry of players) {
+      const id = uuidKey(entry?.uuid ?? entry?.profileId ?? entry?.profile_id);
+      if (id) onlinePlayers.add(id);
+    }
+    checkPlayers();
+    return;
+  }
+
+  if (name === 'player_info_remove') {
+    const players = Array.isArray(data?.players) ? data.players : [];
+    for (const id of players) onlinePlayers.delete(uuidKey(id));
+    return;
+  }
+
   if (USE_LOGIN && !loginSent && (name === 'system_chat' || name === 'player_chat' || name === 'disguised_chat' || name === 'overlay')) {
-    const text = textFromPacket(data).toLowerCase();
+    let text = '';
+    try {
+      if (typeof data === 'string') text = data;
+      else text = JSON.stringify(data);
+    } catch (_) {}
+    text = text.toLowerCase();
     if (text.includes('/login') || text.includes('login') || text.includes('đăng nhập') || text.includes('mat khau') || text.includes('mật khẩu')) sendLogin();
   }
 }
@@ -168,10 +104,17 @@ function connectBot() {
   if (state !== 'OFFLINE') return;
   state = 'CONNECTING';
   loginSent = false;
-  pingBaseline = null;
-  log(`Connecting as ${USERNAME}...`);
+  onlinePlayers.clear();
+  log(`Connecting as ${USERNAME} to ${HOST}:${PORT}...`);
 
-  const newClient = mc.createClient({ host: HOST, port: PORT, username: USERNAME, auth: 'offline', version: '26.2' });
+  let newClient;
+  try {
+    newClient = mc.createClient({ host: HOST, port: PORT, username: USERNAME, auth: 'offline', version: '26.2' });
+  } catch (error) {
+    state = 'OFFLINE';
+    log(`CONNECT ERROR: ${error.message}`);
+    return;
+  }
   client = newClient;
 
   newClient.on('login', () => {
@@ -187,7 +130,11 @@ function connectBot() {
     if (client !== newClient || !meta) return;
     handlePlayPacket(meta.name, data);
   });
-  newClient.on('error', error => log(`ERROR: ${error.message}`));
+
+  newClient.on('error', error => {
+    log(`ERROR: ${error.message}`);
+  });
+
   newClient.on('kick_disconnect', reason => {
     log(`KICKED: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`);
     state = 'KICKED';
@@ -195,35 +142,35 @@ function connectBot() {
     if (loginTimer) clearTimeout(loginTimer);
     loginTimer = null;
   });
+
   newClient.on('end', () => {
     if (client === newClient) client = null;
     if (loginTimer) clearTimeout(loginTimer);
     loginTimer = null;
-    if (state !== 'KICKED') state = 'OFFLINE';
-    log(`Connection ended${state === 'OFFLINE' ? '' : ` (${state})`}.`);
+    onlinePlayers.clear();
+    if (state !== 'KICKED' && state !== 'DISCONNECTING') state = 'OFFLINE';
+    if (state === 'DISCONNECTING') state = 'OFFLINE';
+    log(`Connection ended (${state}).`);
   });
 }
 
-async function controllerTick() {
-  if (state === 'KICKED' || pingInProgress) return;
-  pingInProgress = true;
-  const status = await pingServer();
-  pingInProgress = false;
-  if (!status) { log('[PING] no valid status response.'); return; }
-  log(`[PING] players=${status.online}/${status.max}${status.version ? ` version=${status.version}` : ''}`);
+function controllerTick() {
+  if (state === 'KICKED') return;
+
   if (state === 'OFFLINE') {
-    if (status.online === 0) scheduleJoin();
-    else cancelJoin();
+    // Do not rely on Server List Ping. MSH/proxies can accept the game
+    // connection while not returning a normal status response.
+    if (!rejoinTimer) scheduleJoin();
     return;
   }
-  if (state === 'ONLINE') {
-    if (pingBaseline === null) pingBaseline = status.online;
-    else if (status.online > pingBaseline) disconnectBot(`status count ${status.online} > baseline ${pingBaseline}`);
-  }
+
+  // While online, player_info_update/remove is the authoritative signal
+  // for other connected players. No movement or anti-AFK packets are sent.
 }
 
 log(`AFK controller started for ${HOST}:${PORT}`);
 log(`Minecraft 26.2 protocol client enabled; login=${USE_LOGIN}; interval=${PING_INTERVAL}ms`);
+log('Server-list ping disabled for control flow; using direct game connection + player list detection.');
 controllerTick();
 setInterval(controllerTick, PING_INTERVAL);
 
