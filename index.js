@@ -2,27 +2,21 @@
 
 const net = require('net');
 const mc = require('minecraft-protocol');
+const config = require('./config');
 
-const HOST = process.env.MC_HOST;
-const PORT = Number(process.env.MC_PORT || 25565);
-const USERNAME = process.env.BOT_USERNAME || 'AFK_Bot';
-const PASSWORD = process.env.BOT_PASSWORD;
-const PING_INTERVAL = Number(process.env.PING_INTERVAL || 5000);
-const REJOIN_DELAY = Number(process.env.REJOIN_DELAY || 15000);
-const LOGIN_DELAY = Number(process.env.LOGIN_DELAY || 2000);
+const { HOST, PORT, USERNAME, PASSWORD, PING_INTERVAL, REJOIN_DELAY, LOGIN_DELAY } = config;
 const PROTOCOL = 776; // Minecraft 26.2
 
-if (!HOST) throw new Error('Missing MC_HOST');
-if (!PASSWORD) throw new Error('Missing BOT_PASSWORD');
+if (!HOST || HOST === 'YOUR_SERVER_IP') throw new Error('Please configure HOST in config.js');
+if (!PASSWORD || PASSWORD === 'YOUR_EASYAUTH_PASSWORD') throw new Error('Please configure PASSWORD in config.js');
 
 let client = null;
-let state = 'OFFLINE'; // OFFLINE, CONNECTING, ONLINE, DISCONNECTING, KICKED
+let state = 'OFFLINE';
 let rejoinTimer = null;
 let pingInProgress = false;
 let loginTimer = null;
 let loginSent = false;
 let pingBaseline = null;
-let stopAfterLogin = false;
 
 function log(message) {
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -94,11 +88,8 @@ function pingServer(timeout = 3000) {
     socket.setTimeout(timeout);
     socket.on('connect', () => {
       const handshake = Buffer.concat([
-        writeVarInt(0x00),
-        writeVarInt(PROTOCOL),
-        writeString(HOST),
-        Buffer.from([(PORT >>> 8) & 0xff, PORT & 0xff]),
-        writeVarInt(1)
+        writeVarInt(0x00), writeVarInt(PROTOCOL), writeString(HOST),
+        Buffer.from([(PORT >>> 8) & 0xff, PORT & 0xff]), writeVarInt(1)
       ]);
       socket.write(packet(handshake));
       socket.write(packet(Buffer.from([0x00])));
@@ -109,11 +100,7 @@ function pingServer(timeout = 3000) {
       try {
         const status = parseStatusPacket(Buffer.concat(chunks, total));
         if (status?.players && typeof status.players.online === 'number') {
-          finish({
-            online: status.players.online,
-            max: status.players.max,
-            version: status.version?.name || null
-          });
+          finish({ online: status.players.online, max: status.players.max, version: status.version?.name || null });
         }
       } catch (_) {}
     });
@@ -147,8 +134,13 @@ function disconnectBot(reason) {
 function sendLogin() {
   if (loginSent || !client || state !== 'ONLINE') return;
   loginSent = true;
-  client.write('chat_command', { command: `login ${PASSWORD}` });
-  log('EasyAuth login command sent.');
+  try {
+    if (typeof client.chat === 'function') client.chat(`/login ${PASSWORD}`);
+    else client.write('chat_command', { command: `login ${PASSWORD}` });
+    log('EasyAuth login command sent.');
+  } catch (error) {
+    log(`LOGIN ERROR: ${error.message}`);
+  }
 }
 
 function textFromPacket(data) {
@@ -159,63 +151,30 @@ function textFromPacket(data) {
     if (data.content) return String(data.content);
     if (data.text) return String(data.text);
     return JSON.stringify(data);
-  } catch (_) {
-    return '';
-  }
+  } catch (_) { return ''; }
 }
 
 function handlePlayPacket(name, data) {
-  // KeepAlive is required for a stable idle connection.
   if (name === 'keep_alive') {
     const id = data?.keepAliveId ?? data?.id;
-    if (id !== undefined) {
-      try { client.write('keep_alive', { id }); } catch (_) {}
-    }
+    if (id !== undefined) { try { client.write('keep_alive', { id }); } catch (_) {} }
     return;
   }
 
-  // Login/configuration prompts are handled by looking for common EasyAuth text.
   if (!loginSent && (name === 'system_chat' || name === 'player_chat' || name === 'disguised_chat' || name === 'overlay')) {
     const text = textFromPacket(data).toLowerCase();
-    if (text.includes('/login') || text.includes('login') || text.includes('đăng nhập') || text.includes('mat khau') || text.includes('mật khẩu')) {
-      sendLogin();
-    }
-  }
-
-  // A Join Game / login packet means the play connection is ready.
-  if (name === 'login' || name === 'game_join') {
-    if (state === 'CONNECTING') {
-      state = 'ONLINE';
-      log('Bot online. Standing completely still.');
-      loginTimer = setTimeout(sendLogin, LOGIN_DELAY);
-    }
-  }
-
-  // Any player-info packet containing a different username is treated as a real player.
-  if (!stopAfterLogin && (name === 'player_info_update' || name === 'player_info')) {
-    const raw = JSON.stringify(data || {});
-    if (USERNAME && raw.toLowerCase().includes('"username":"' + USERNAME.toLowerCase() + '"')) return;
-    // Do not immediately kick on arbitrary player-info data; the status-ping baseline below
-    // is the authoritative fallback. This keeps packet parsing lightweight and conservative.
+    if (text.includes('/login') || text.includes('login') || text.includes('đăng nhập') || text.includes('mat khau') || text.includes('mật khẩu')) sendLogin();
   }
 }
 
 function connectBot() {
   if (state !== 'OFFLINE') return;
-
   state = 'CONNECTING';
   loginSent = false;
   pingBaseline = null;
-  stopAfterLogin = false;
   log(`Connecting as ${USERNAME}...`);
 
-  const newClient = mc.createClient({
-    host: HOST,
-    port: PORT,
-    username: USERNAME,
-    auth: 'offline',
-    version: '26.2'
-  });
+  const newClient = mc.createClient({ host: HOST, port: PORT, username: USERNAME, auth: 'offline', version: '26.2' });
   client = newClient;
 
   newClient.on('login', () => {
@@ -232,9 +191,7 @@ function connectBot() {
     handlePlayPacket(meta.name, data);
   });
 
-  newClient.on('error', error => {
-    log(`ERROR: ${error.message}`);
-  });
+  newClient.on('error', error => log(`ERROR: ${error.message}`));
 
   newClient.on('kick_disconnect', reason => {
     log(`KICKED: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`);
@@ -258,12 +215,7 @@ async function controllerTick() {
   pingInProgress = true;
   const status = await pingServer();
   pingInProgress = false;
-
-  if (!status) {
-    log('[PING] no valid status response.');
-    return;
-  }
-
+  if (!status) { log('[PING] no valid status response.'); return; }
   log(`[PING] players=${status.online}/${status.max}${status.version ? ` version=${status.version}` : ''}`);
 
   if (state === 'OFFLINE') {
@@ -286,8 +238,6 @@ setInterval(controllerTick, PING_INTERVAL);
 process.on('SIGINT', () => {
   cancelJoin();
   if (loginTimer) clearTimeout(loginTimer);
-  if (client) {
-    try { client.end('controller stopped'); } catch (_) {}
-  }
+  if (client) { try { client.end('controller stopped'); } catch (_) {} }
   process.exit(0);
 });
