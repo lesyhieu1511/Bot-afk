@@ -20,12 +20,12 @@ jobs:
       - name: Install production dependencies
         run: npm install --omit=dev --no-audit --no-fund
 
-      - name: Create KataBump ZIP
+      - name: Create flat KataBump bundle
         run: |
-          rm -rf katabump-bundle
-          mkdir katabump-bundle
-          cp index.js config.js katabump-bundle/
-          cat > katabump-bundle/package.json <<'EOF'
+          rm -rf katabump-final
+          mkdir katabump-final
+          cp index.js config.js katabump-final/
+          cat > katabump-final/package.json <<'EOF'
           {
             "name": "minecraft-afk-bot-26-2",
             "version": "2.0.0",
@@ -40,13 +40,14 @@ jobs:
             }
           }
           EOF
-          cp -r node_modules katabump-bundle/
-          cd katabump-bundle
-          zip -qr ../Bot-afk-KataBump.zip index.js config.js package.json node_modules
+          cp -r node_modules katabump-final/
+          test -f katabump-final/node_modules/minecraft-protocol/package.json
+          node -e "process.chdir('katabump-final'); require('minecraft-protocol'); console.log('minecraft-protocol OK')"
 
-      - name: Upload bundle artifact
+      - name: Upload flat bundle
         uses: actions/upload-artifact@v4
         with:
-          name: Bot-afk-KataBump
-          path: Bot-afk-KataBump.zip
+          name: KataBump-final
+          path: katabump-final/
+          include-hidden-files: false
           retention-days: 7
