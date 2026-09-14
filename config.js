@@ -11,6 +11,7 @@ module.exports = {
   PORT: 25565,
 
   // EasyAuth
+  USE_LOGIN: false,
   USERNAME: 'AFK_Bot',
   PASSWORD: 'YOUR_EASYAUTH_PASSWORD',
 
