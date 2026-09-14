@@ -1,12 +1,16 @@
 {
   "name": "minecraft-afk-bot-26-2",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Minimal Minecraft 26.2 AFK bot",
+  "description": "Minimal Minecraft 26.2 AFK protocol client",
   "main": "index.js",
-  "scripts": { "start": "node index.js" },
-  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
-    "mineflayer": "https://github.com/Complexity-ML/mineflayer-26.2/releases/download/complexity-26.2.3/mineflayer-complexity-26.2.3.tgz"
+    "minecraft-protocol": "https://github.com/Complexity-ML/node-minecraft-protocol-26.2/releases/download/complexity-26.2.3/minecraft-protocol-complexity-26.2.3.tgz"
   }
 }
